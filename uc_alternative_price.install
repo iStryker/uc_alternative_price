@@ -1,0 +1,106 @@
+<?php
+// $Id$
+
+
+/**
+ * Implementation of hook_schema().
+ */
+function uc_alternative_price_schema() {
+  $schema['uc_alternative_prices'] = array(
+    'description' => t('alternative price table for Ubercart'),
+    'fields' => array(
+      'pfid' => array(
+        'description' => t('price id'),
+        'type' => 'int',
+        'size' => 'medium',
+        'not null' => TRUE,
+      ),
+      'alternative_price' => array(
+        'description' => t('alternative price'),
+        'type' => 'numeric',
+        'precision' => 10,
+        'scale' => 2,
+        'not null' => TRUE,
+        'default' => 0.00,
+      ),
+      'price_low' => array(
+        'description' => t('low price'),
+        'type' => 'numeric',
+        'precision' => 10,
+        'scale' => 2,
+        'not null' => FALSE,
+      ),
+      'price_high' => array(
+        'description' => t('high price'),
+        'type' => 'numeric',
+        'precision' => 10,
+        'scale' => 2,
+        'not null' => FALSE,
+      ),
+      'discount' => array(
+        'description' => t('the discount'),
+        'type' => 'numeric',
+        'precision' => 10,
+        'scale' => 2,
+        'not null' => FALSE,
+      ),
+      'alternative_description' => array(
+        'description' => t('alternative description'),
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => FALSE,
+      ),
+      'standard_description' => array(
+        'description' => t('normal or standard description'),
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => FALSE,
+      ),
+    ),
+    'indexes' => array(
+      'pfid' => array('pfid'),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Implementation of hook_schema_alter().
+ */
+function uc_alternative_price_schema_alter(&$schema) {
+  $schema['uc_products']['fields']['unique'] = array(
+    'description' => t('makes product unique'),
+    'type' => 'int',
+    'size' => 'tiny',
+    'unsigned' => TRUE,
+    'not null' => TRUE,
+    'default' => 0,
+  );
+}
+
+/**
+* Implementation of hook_install().
+*/
+function uc_alternative_price_install() {
+
+   drupal_install_schema('uc_alternative_price');
+  $ret = array();
+  $schema['uc_products'] = array();
+  uc_alternative_price_schema_alter($schema);
+  foreach ($schema['uc_products']['fields'] as $name => $spec) {
+    db_add_field($ret, 'uc_products', $name, $spec);
+  }
+}
+/**
+* Implementation of hook_uninstall().
+*/
+function uc_alternative_price_uninstall() {
+  
+  drupal_uninstall_schema('uc_alternative_price');
+  $ret = array();
+  $schema['uc_products'] = array();
+  uc_alternative_price_schema_alter($schema);
+  foreach ($schema['uc_products']['fields'] as $name => $spec) {
+    db_drop_field($ret, 'uc_products', $name, $spec);
+  }
+}

@@ -1,0 +1,697 @@
+<?php
+// $Id$
+
+
+/* TODO FormAPI image buttons are now supported.
+   FormAPI now offers the 'image_button' element type, allowing developers to
+   use icons or other custom images in place of traditional HTML submit buttons.
+
+$form['my_image_button'] = array(
+  '#type'         => 'image_button',
+  '#title'        => t('My button'),
+  '#return_value' => 'my_data',
+  '#src'          => 'my/image/path.jpg',
+); */
+
+/* TODO Remove $row argument from db_result() method
+   The $row argument of db_result() was removed from the database abstraction
+   layer in 6.x core, as it was a database dependent option. Developers need to
+   use other handling to replace the needs of this method. */
+
+/* TODO Change 'Submit' to 'Save' on buttons
+   It has been agreed on that the description 'Submit' for a button is not a
+   good choice since it does not indicate what actually happens. While for
+   example on node editing forms, 'Preview' and 'Delete' describe exactly what
+   will happen when the user clicks on the button, 'Submit' only gives a vague
+   idea. When labelling your buttons, make sure that it is clear what this
+   button does when the user clicks on it. */
+
+/* TODO New user_mail_tokens() method may be useful.
+   user.module now provides a user_mail_tokens() function to return an array
+   of the tokens available for the email notification messages it sends when
+   accounts are created, activated, blocked, etc. Contributed modules that
+   wish to make use of the same tokens for their own needs are encouraged
+   to use this function. */
+
+/* TODO
+   There is a new hook_watchdog in core. This means that contributed modules
+   can implement hook_watchdog to log Drupal events to custom destinations.
+   Two core modules are included, dblog.module (formerly known as watchdog.module),
+   and syslog.module. Other modules in contrib include an emaillog.module,
+   included in the logging_alerts module. See syslog or emaillog for an
+   example on how to implement hook_watchdog.
+function example_watchdog($log = array()) {
+  if ($log['severity'] == WATCHDOG_ALERT) {
+    mysms_send($log['user']->uid,
+      $log['type'],
+      $log['message'],
+      $log['variables'],
+      $log['severity'],
+      $log['referer'],
+      $log['ip'],
+      format_date($log['timestamp']));
+  }
+} */
+
+/* TODO You may want to take advantage of new form-specific alter hooks.
+   The hook_form_alter() is complemented by hook_form_$form-id_alter().
+   Optionally, modules can implement form-specific alteration functions rather
+   than a single hook_form_alter() with many conditional switch statements.
+   This is optional, and is most useful for tidying the code of modules that
+   alter many forms to customize a site's operations.
+   The new function names are built using the following format:
+   [your-module-name]_form_[$form_id]_alter. */
+
+/**
+* @file
+* The Alternative Price module is a product feature that allows you to a 2nd
+* price to a product. Products with this feature will have a 2nd add to cart
+* button that allows the customer to choose between the 2 prices. This price
+* can be set to adjust based on past purchases. Additionally, products can
+* be set as unique. In effect, the product will be an item that can only be
+* purchased once; it will be unpublished after a customer places an order for
+* the item.
+*
+* Development sponsored by ...
+*
+*/
+
+define('UC_ALTERNATIVE_PRICE_FID', 'alternative_price');
+
+/*******************************************************************************
+* Hook Functions (Drupal)
+*******************************************************************************/
+
+/**
+* Implementation of hook_form_alter().
+*/
+function uc_alternative_price_form_alter(&$form, &$form_state, $form_id) {
+
+  //Alter add to cart form with new labels and new add to cart button
+  if (strpos($form_id, 'uc_product_add_to_cart_form') !== FALSE) {
+    $alternative_price = _uc_alternative_price_get_alternative_price($form['nid']['#value']);
+    if (!empty($alternative_price->alternative_price)) {
+      $form['alternative_price'] = array(
+        '#type' => 'value',
+        '#value' => $alternative_price,
+      );
+      $form['alternative_price_submit'] = array(
+        '#type' => 'submit',
+        '#value' => $alternative_price->alternative_button,
+      );
+      $form['#validate'][] = 'uc_alternative_price_add_to_cart_validate';
+      $form['#submit'][] = 'uc_alternative_price_add_to_cart_submit';
+    }
+    if (!empty($alternative_price->standard_button)) {
+      $form['submit']['#value'] = $alternative_price->standard_button;
+    }
+  }
+
+  //Alter product edit form to include a unique checkbox
+  //changed line below
+  //if ($form_id == 'product_node_form') {
+  if (preg_match('/(.+)_node_form/', $form_id, $matches) && in_array($matches[1], module_invoke_all('product_types'))) {
+    $unique = (!empty($form['nid']['#value'])) ? db_result(db_query("SELECT `unique` FROM {uc_products} WHERE nid = %d", $form['nid']['#value'])) : FALSE;
+    $description = (variable_get('uc_alternative_price_unpublish_alternative', FALSE)) ? t('A unique product will become unpublished once purchased by a customer at the alternative price.') : t('A unique product will become unpublished once purchased by a customer');
+    $form['base']['unique'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Unique product'),
+      '#default_value' => $unique,
+      '#description' => $description,
+    );
+    $form['#submit'][] = 'uc_alternative_product_node_form_submit';
+  }
+
+  //Alter product field settings for to add alternative_price and selected_attributes field
+  if ($form_id == 'uc_product_field_settings_form') {
+    $enabled = variable_get('uc_product_field_enabled', array('alternative_price' => TRUE, 'selected_attributes' => FALSE));
+    $weight = variable_get('uc_product_field_weight', array('alternative_price' => 5, 'selected_attributes' => 9));
+    $form['#theme'] = 'uc_alternative_price_settings_form';
+    foreach (array('alternative_price', 'selected_attributes') as $id) {
+      $form['fields'][$id]['enabled'] = array(
+        '#type' => 'checkbox',
+        '#default_value' => $enabled[$id],
+      );
+      $form['fields'][$id]['weight'] = array(
+        '#type' => 'weight',
+        '#delta' => 10,
+        '#default_value' => $weight[$id],
+      );
+    }
+  }
+}
+
+/**
+* Implementation of hook_menu().
+*/
+function uc_alternative_price_menu() {
+/* TODO
+   Non menu code that was placed in hook_menu under the '!$may_cache' block
+   so that it could be run during initialization, should now be moved to hook_init.
+   Previously we called hook_init twice, once early in the bootstrap process, second
+   just after the bootstrap has finished. The first instance is now called boot
+   instead of init.
+   
+   In Drupal 6, there are now two hooks that can be used by modules to execute code
+   at the beginning of a page request. hook_boot() replaces hook_boot() in Drupal 5
+   and runs on each page request, even for cached pages. hook_boot() now only runs
+   for non-cached pages and thus can be used for code that was previously placed in
+   hook_menu() with $may_cache = FALSE:
+   
+   Dynamic menu items under a '!$may_cache' block can often be simplified
+   to remove references to arg(n) and use of '%<function-name>' to check
+   conditions. See http://drupal.org/node/103114.
+   
+   The title and description arguments should not have strings wrapped in t(),
+   because translation of these happen in a later stage in the menu system.
+*/
+  if (!$may_cache) {
+    drupal_add_css(drupal_get_path('module', 'uc_alternative_price') .'/uc_alternative_price.css');
+  }
+}
+
+/**
+* Implementation of hook_nodeapi().
+*/
+function uc_alternative_price_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+  switch ($op) {
+    case 'view':
+      $enabled = variable_get('uc_product_field_enabled', array('alternative_price' => TRUE, 'selected_attributes' => FALSE));
+      $weight = variable_get('uc_product_field_weight', array('alternative_price' => 5, 'selected_attributes' => 9));
+      if ($alternative_price = _uc_alternative_price_get_alternative_price($node->nid)) {
+        $alternative_description = (!empty($alternative_price->alternative_description)) ? str_replace(' ', '_', strtolower($alternative_price->alternative_description)) : 'alternative_price';
+        $standard_description = (!empty($alternative_price->standard_description)) ? str_replace(' ', '_', strtolower($alternative_price->standard_description)) : 'standard_price';
+        $node->content['alternative_price'] = array(
+          '#value' => '<div class="uc-alternative-price-alt">'.t("!price", array('!price' => uc_currency_format($alternative_price->price))) .'</div>',
+          '#access' => $enabled['alternative_price'],
+          '#weight' => $weight['alternative_price']
+        );
+        if (variable_get('uc_alternative_price_display_alternative', FALSE)) {
+          $node->content['display_price']['#value'] = theme('uc_product_display_price', $alternative_price->price);
+        }
+        $node->content['sell_price']['#value'] = '<div class="uc-alternative-price-standard">'.t("!price", array('!price' => uc_currency_format($node->sell_price))) .'</div>';
+        if (module_exists('uc_attribute') && db_result(db_query("SELECT aid FROM {uc_product_attributes} WHERE nid = %d", $node->nid))) {
+          $node->content['selected_attributes'] = array(
+            '#value' => theme('uc_alternative_price_selected_attributes', $node->nid),
+            '#access' => $enabled['selected_attributes'],
+            '#weight' => $weight['selected_attributes'],
+          );
+        }
+      }
+      break;
+    case 'insert':
+    case 'update':    
+      db_query("UPDATE {uc_products} SET `unique` = %d WHERE nid = %d", $node->unique, $node->nid);
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+* Implementation of hook_views_tables().
+*/
+//changed this
+//function uc_alternative_price_views_tables() {
+// function uc_alternative_price_views_data() {
+  // $data['uc_product_features']['table']['join'] = array(
+    // 'node' => array(
+      // 'left_field' => 'nid',
+      // 'field' => 'nid',
+    // ),
+  // );
+  // $data['uc_product_features']['alternative price'] = array(
+    // 'title' => t('Product:Alternative Price'),
+    // 'help' => t('The alternative price product feature (if applicable).'),
+    // 'handler' => 'uc_alternative_price_views_handlers_alternative_price',
+    // 'group' => t('Product'),
+  // );
+  // $data['uc_product_features']= array(
+    // 'name' => 'uc_product_features',
+    // 'join' => array(
+      // 'left' => array(
+        // 'table' => 'node',
+        // 'field' => 'nid',
+      // ),
+      // 'right' => array(
+        // 'field' => 'nid',
+      // ),
+      // 'extra' => array(
+        // 'fid' => UC_ALTERNATIVE_PRICE_FID
+      // ),
+    // ),
+    // 'fields' => array(
+      // 'pfid' => array(
+        // 'name' => t('Product: Alternative Price'),
+        // 'help' => t('The alternative price product feature (if applicable).'),
+        // 'handler' => 'uc_alternative_price_views_handler_alternative_price',
+      // )
+    // ),
+    // 'filters' => array(
+      // 'has_alternative_price' => array(
+        // 'name' => t('Product: Has alternative price'),
+        // 'operator' => array('=' => 'Equals'),
+        // 'list' => array(1 => 'Yes'),
+        // 'list-type' => 'select',
+        // 'handler' => 'uc_alternative_price_views_handler_has_alternative_price',
+        // 'help' => t('Filter the product node based on whether it has an alternative price.'),
+      // ),
+    // ),
+  // );
+  // return $tables;
+  // return $data;
+// }
+
+/**
+* Views handler for alternative price
+*/
+function uc_alternative_price_views_handler_alternative_price($fieldinfo, $fielddata, $value, $data) {
+  $alternative_price = _uc_alternative_price_get_alternative_price($data->nid);
+  return ($alternative_price) ? uc_currency_format($alternative_price->price) : '';
+}
+
+/**
+* Views handler for has_alternative_price filter
+*/
+// function uc_alternative_price_views_handler_has_alternative_price($op, $filter, $filterinfo, &$query) {
+  // switch ($op) {
+    // case 'handler':
+      // if ($filter['value']) {
+        // $query->add_table('uc_product_features');
+        // $query->add_field('fid', 'uc_product_features');
+        // $query->add_where("uc_product_features.fid != ''");
+      // }
+      // break;
+    // default:
+      // break;
+  // }
+// }
+
+/*******************************************************************************
+* Übercart Hooks
+*******************************************************************************/
+
+/**
+* Implementation of hook_cart_item().
+*/
+function uc_alternative_price_cart_item($op, &$item) {
+  switch ($op) {
+    case 'load':
+      if ($item->data['alternative_price']) {
+        $alternative_price = _uc_alternative_price_get_alternative_price($item->nid);
+        $item->price = $alternative_price->price;
+        $alternative_description = (!empty($alternative_price->alternative_description)) ? $alternative_price->alternative_description : t("Alternative Price");
+        $item->title .= " (". $alternative_description .")";
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+* Implementation of hook_order().
+*/
+function uc_alternative_price_order($op, $order, $arg2) {
+  switch ($op) {
+    case 'submit':
+      foreach ($order->products as $product) {
+        if (db_result(db_query("SELECT `unique` FROM {uc_products} WHERE nid = %d", $product->nid))) {
+          //Check price for alternative price, if only unpublishing on alternative price.
+          if (variable_get('uc_alternative_price_unpublish_alternative', FALSE)) {
+            $standard_price = db_result(db_query("SELECT `sell_price` FROM {uc_products} WHERE `nid` = %d", $product->nid));
+            if ($standard_price == $product->price) {
+              continue;
+            }
+          }
+          $node = node_load(array('nid' => $product->nid));
+          if (!$node->status) {
+            return array(array('pass' => FALSE, 'message' => t('Unable to complete checkout. %product_name has been already purchased by another customer. You must remove it from the cart before you can complete your order.', array('%product_name' => $product->title))));
+          }
+          else {
+            $node->status = 0;
+            node_save($node);
+            uc_order_comment_save($order->order_id, 0, t("The product !product has been unpublished.", array('!product' => l($node->title, 'node/'. $node->nid))));
+          }
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+* Implementation of hook_product_feature().
+*/
+function uc_alternative_price_product_feature() {
+  $features[] = array(
+    'id' => UC_ALTERNATIVE_PRICE_FID,
+    'title' => t('Alternative price'),
+    'callback' => 'uc_alternative_price_feature_form',
+    'delete' => 'uc_alternative_price_feature_delete',
+    'settings' => 'uc_alternative_price_feature_settings',
+  );
+
+  return $features;
+}
+
+/*******************************************************************************
+* Callback Functions, Forms, and Tables
+*******************************************************************************/
+
+/**
+ * hook_themes()
+ */
+function uc_alternative_price_theme() {
+  return array(
+    'uc_alternative_price_discount' => array(
+      'arguments' => array('discount' => NULL),
+    ),
+    'uc_alternative_price_settings_form' => array(
+      'arguments' => array('form' => NULL),
+    ),
+    'uc_alternative_price_selected_attributes' => array(
+      'arguments' => array('nid' => NULL),
+    ),
+  );
+}
+/**
+* Theme the form fields for apply alternative price discount
+* @ingroup themeable
+*/
+function theme_uc_alternative_price_discount($discount) {
+  return '<table id="uc-alternative-price-discount"><thead><th></th><th></th><th></th></thead><tbody><tr><td>'."\n". drupal_render($discount['price_high']) .'</td><td>'. drupal_render($discount['discount_price']) .'</td><td>'. drupal_render($discount['price_low']) ."</td></tr></tbody></table>\n";
+}
+
+/**
+* Overide the standard product field settings form to add two new fields
+* @ingroup themeable
+*/
+function theme_uc_alternative_price_settings_form($form) {
+  $options = array(
+    'model' => t('Model'),
+    'image' => t('Image'),
+    'display_price' => t('Display price'),
+    'list_price' => t('List price'),
+    'cost' => t("Cost (seen only by 'administer products' permission)"),
+    'sell_price' => t('Sell price'),
+    'weight' => t('Weight'),
+    'dimensions' => t('Dimensions'),
+    'alternative_price' => t('Alternative price'),
+    'selected_attributes' => t('Selected attributes'),
+    'add_to_cart' => variable_get('uc_product_add_to_cart_text', t('Add to cart')),
+  );
+
+  $header = array(t('Enable'), t('Product field'), t('Weight'));
+  $rows = array();
+  uasort($form['fields'], 'uc_weight_sort');
+  foreach (element_children($form['fields']) as $field) {
+    $row = array();
+    $row[] = drupal_render($form['fields'][$field]['enabled']);
+    $row[] = $options[$field];
+    $row[] = drupal_render($form['fields'][$field]['weight']);
+    $rows[] = $row;
+  }
+  $output .= theme('table', $header, $rows);
+
+  $output .= drupal_render($form);
+  return $output;
+}
+
+/**
+* Theme previously selected attributes on product page
+* @ingroup themeable
+*/
+function theme_uc_alternative_price_selected_attributes($nid) {
+  $attributes = array();
+  $purchased_products = db_query("SELECT p.data FROM {uc_order_products} as p LEFT JOIN {uc_orders} as o ON p.order_id = o.order_id WHERE p.nid = %d AND o.order_status = '%s'", $nid, variable_get('uc_alternative_price_completed_status', 'completed'));
+  while ($product = db_fetch_object($purchased_products)) {
+    $data = unserialize($product->data);
+    if (is_array($data['attributes'])) {
+      foreach ($data['attributes'] as $attribute_name => $attribute_value) {
+        $attributes[$attribute_name] = (is_array($attributes[$attribute_name])) ? $attributes[$attribute_name] : array();
+        if (!in_array($attribute_value, $attributes[$attribute_name]) && !empty($attribute_value)) {
+          $attributes[$attribute_name][] = $attribute_value;
+        }
+      }
+    }
+  }
+  $output = '<div class="selected_attributes">';
+  foreach ($attributes as $attribute_name => $attribute_values) {
+    $output .= '<strong>'. t("Previously selected for ") . $attribute_name .':</strong> '. implode(', ', $attribute_values) .'<br/>';
+  }
+  $output .= '</div>';
+  return $output;
+}
+
+/**
+* Validation & submit functions for altered add to cart form
+*/
+function uc_alternative_price_add_to_cart_validate($form, &$form_state) {
+/* TODO The 'op' element in the form values is deprecated.
+   Each button can have #validate and #submit functions associated with it.
+   Thus, there should be one button that submits the form and which invokes
+   the normal form_id_validate and form_id_submit handlers. Any additional
+   buttons which need to invoke different validate or submit functionality
+   should have button-specific functions. */
+  $add_alternative = ($form_state['values']['op'] == $form_state['values']['alternative_price']->alternative_button) ? TRUE : FALSE;
+  $descriptions = array('!alternative_description' => $form_state['values']['alternative_price']->alternative_description, '!standard_description' => $form_state['values']['alternative_price']->standard_description);
+  if ($add_unique && $form_state['values']['qty'] > 1) {
+    form_set_error('', t('You may only add one !alternative_description product to your cart', $descriptions));
+  }
+  foreach (uc_cart_get_contents() as $item) {
+    if ($item->nid == $form_state['values']['nid']) {
+      if ($item->data['alternative_price'] && !$add_alternative) {
+        form_set_error('', t("You must remove the !alternative_description items from your cart before you can add !standard_description items to your cart.", $descriptions));
+      }
+      if (!$item->data['alternative_price'] && $add_alternative) {
+        form_set_error('', t("You must remove the !standard_description items from your cart before you can add !alternative_description items to your cart.", $descriptions));
+      }
+    }
+  }
+}
+function uc_alternative_price_add_to_cart_submit($form, &$form_state) {
+/* TODO The 'op' element in the form values is deprecated.
+   Each button can have #validate and #submit functions associated with it.
+   Thus, there should be one button that submits the form and which invokes
+   the normal form_id_validate and form_id_submit handlers. Any additional
+   buttons which need to invoke different validate or submit functionality
+   should have button-specific functions. */
+  if ($form_state['values']['op'] == $form_state['values']['alternative_price']->alternative_button) {
+    $data = unserialize(db_result(db_query("SELECT `data` FROM {uc_cart_products} WHERE cart_id = '%s' AND nid = %d", uc_cart_get_id(), $form_state['values']['nid'])));
+    $data['alternative_price'] = TRUE;
+    db_query("UPDATE {uc_cart_products} SET `data` = '%s' WHERE cart_id = '%s' AND nid = %d", serialize($data), uc_cart_get_id(), $form_state['values']['nid']);
+  }
+}
+
+/**
+* product feature delete function
+*/
+function uc_alternative_price_feature_delete($feature) {
+  db_query("DELETE FROM {uc_alternative_prices} WHERE pfid = %d", $feature['pfid']);
+}
+
+/**
+* Form builder for hook_product_feature
+* @see theme_uc_alternative_price_discount
+*/
+function uc_alternative_price_feature_form(&$form_state, $node, $feature) {
+  if (empty($feature) && db_result(db_query("SELECT pfid FROM {uc_product_features} WHERE nid = %d AND fid = '%s'", $node->nid, UC_ALTERNATIVE_PRICE_FID))) {
+    drupal_set_message(t("Product nodes can only have one alternative price feature. Either delete or edit the existing alternative price feature."), 'error');
+    drupal_goto("node/". $node->nid ."/edit/features");
+  }
+  $alternative_price = _uc_alternative_price_get_alternative_price($node->nid);
+  $form['pfid'] = array(
+    '#type' => 'value',
+    '#value' => $alternative_price->pfid,
+  );
+  $form['nid'] = array(
+      '#type' => 'value',
+      '#value' => $node->nid,
+  );
+  $form['alternative_price'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Alternative price'),
+    '#required' => TRUE,
+    '#default_value' => (!empty($alternative_price->alternative_price)) ? $alternative_price->alternative_price : "0.00",
+    '#description' => t('The alternative purchasing price for this product.'),
+    '#size' => 20,
+    '#maxlength' => 35,
+  );
+  $form['discount'] = array(
+    '#theme' => 'uc_alternative_price_discount',
+  );
+  $form['discount']['price_high'] = array(
+    '#type' => 'textfield',
+    '#title' => t('High price'),
+    '#default_value' => (!empty($alternative_price->price_high)) ? $alternative_price->price_high : '',
+    '#description' => t('The amount an alternative price is discounted to after the first purchase.'),
+    '#size' => 20,
+    '#maxlength' => 35,
+  );
+  $form['discount']['discount_price'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Discount price'),
+    '#default_value' => (!empty($alternative_price->discount)) ? $alternative_price->discount : '',
+    '#description' => t('For each product purchase past the first purchase discount the high price by this amount.'),
+    '#size' => 20,
+    '#maxlength' => 35,
+  );
+  $form['discount']['price_low'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Low price'),
+    '#default_value' => (!empty($alternative_price->price_low)) ? $alternative_price->price_low : '',
+    '#description' => t('The lowest amount an alternative price can be discounted.'),
+    '#size' => 20,
+    '#maxlength' => 35,
+  );
+  $form['alternative_description'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Alternative price description'),
+    '#default_value' => (!empty($alternative_price->alternative_description)) ? $alternative_price->alternative_description : '',
+    '#description' => t('The label describing the alternative price on the product view page.'),
+    '#size' => 32,
+    '#maxlength' => 255,
+  );
+  $form['standard_description'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Standard price description'),
+    '#default_value' => (!empty($alternative_price->standard_description)) ? $alternative_price->standard_description : '',
+    '#description' => t('The label describing the standard price on the product view page.'),
+    '#size' => 32,
+    '#maxlength' => 255,
+  );
+
+  return uc_product_feature_form($form);
+}
+function uc_alternative_price_feature_form_validate($form, &$form_state) {
+  $all_empty = empty($form_state['values']['price_high']) && empty($form_state['values']['discount_price']) && empty($form_state['values']['price_low']);
+  $all_entry = !empty($form_state['values']['price_high']) && !empty($form_state['values']['discount_price']) && !empty($form_state['values']['price_low']);
+  if (!$all_empty && !$all_entry) {
+    $fields = array('price_high' => t("High price"), 'discount_price' => t("Discount price"), 'price_low' => t("Low price"));
+    foreach (array_keys($fields) as $field) {
+      if (empty($form_state['values'][$field])) {
+        form_set_error($field, t("!form_element is required to apply discount to the alternative price.", array('!form_element' => $fields[$field])));
+      }
+    }
+  }
+}
+function uc_alternative_price_feature_form_submit($form, &$form_state) {
+  $description = t("<strong>Alternative price:</strong> ") . check_plain(uc_currency_format($form_state['values']['alternative_price'])) ."<br/>\n";
+  $description .= (empty($form_state['values']['discount_price'])) ? '' : t("<strong>High price:</strong>") . check_plain(uc_currency_format($form_state['values']['price_high'])) ."<br/>\n". t("<strong>Low price:</strong> ") . check_plain(uc_currency_format($form_state['values']['price_low'])) ."<br/>\n". t("<strong>Discount price:</strong> ") . check_plain(uc_currency_format($form_state['values']['discount_price'])) ."<br/>\n";
+  $description .= (empty($form_state['values']['alternative_description'])) ? '' : t("<strong>Alternative price description:</strong> ") . check_plain($form_state['values']['alternative_description']) ."<br/>\n";
+  $description .= (empty($form_state['values']['standard_description'])) ? '' : t("<strong>Standard price description:</strong> ") . check_plain($form_state['values']['standard_description']) ."<br/>\n";
+  
+  //get the product feature ID
+  $pfid = $form_state['values']['pfid'];
+  
+  $data = array(
+    'pfid' => $pfid,
+    'nid' => $form_state['values']['nid'],
+    'fid' => UC_ALTERNATIVE_PRICE_FID,
+    'description' => $description,
+  );
+  //update uc_product_feature table first (handle by uc_products module)
+  uc_product_feature_save($data);
+  
+  //then update uc_alternative_feature table
+  //reason why is because pfid could be NULL when a new feature is added and need to query
+  //the uc_product_feature for the its pfid to reference
+  if (empty($form_state['values']['pfid'])) {
+    $temp_object = db_fetch_object(db_query("SELECT pfid FROM {uc_product_features} WHERE nid = %d", $form_state['values']['nid']));
+    $pfid = $temp_object->pfid;
+  }  
+  
+  if (!empty($form_state['values']['pfid'])) {
+    //TODO, this should be an update.  It works as it gets update somewhere else which i don't know of.
+    db_query("DELETE FROM {uc_alternative_prices} WHERE pfid = %d", $pfid);
+  }
+  if (empty($form_state['values']['discount_price'])) {
+    db_query("INSERT INTO {uc_alternative_prices} (`pfid`,`alternative_price`,`alternative_description`,`standard_description`) VALUES (%d, %f, '%s', '%s')", $pfid, $form_state['values']['alternative_price'], $form_state['values']['alternative_description'], $form_state['values']['standard_description']);
+  }
+  else {
+    db_query("INSERT INTO {uc_alternative_prices} (`pfid`,`alternative_price`,`price_low`,`price_high`,`discount`,`alternative_description`,`standard_description`) VALUES (%d, %f, %f, %f, %f, '%s', '%s')", $pfid, $form_state['values']['alternative_price'], $form_state['values']['price_low'], $form_state['values']['price_high'], $form_state['values']['discount_price'], $form_state['values']['alternative_description'], $form_state['values']['standard_description']);
+  }
+  
+  //redirect to feature page
+  $form_state['redirect'] = 'node/'. $form_state['values']['nid'] .'/edit/features';
+}
+
+/**
+* Form builder for alternative price product feature settings
+*/
+function uc_alternative_price_feature_settings() {
+  $statuses = array();
+  foreach (uc_order_status_list('general') as $status) {
+    $statuses[$status['id']] = $status['title'];
+  }
+  $form['uc_alternative_price_completed_status'] = array(
+    '#type' => 'select',
+    '#title' => t('Completed status'),
+    '#default_value' => variable_get('uc_alternative_price_completed_status', 'completed'),
+    '#description' => t('The order status to count as "completed" to be used in counting past purchases and attributes'),
+    '#options' => $statuses,
+  );
+  $form['uc_alternative_price_display_alternative'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Use alternative price as display price'),
+    '#default_value' => variable_get('uc_alternative_price_display_alternative', FALSE),
+    '#description' => t('The default display price on product nodes will be the alternative price instead of the standard price'),
+  );
+  $form['uc_alternative_price_unpublish_alternative'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Unpublish "Unique" items only when purchased with an alternative price.'),
+    '#default_value' => variable_get('uc_alternative_price_unpublish_alternative', FALSE),
+    '#description' => t('If checked, products marked "Unique" will only become unpublished if they are purchased with an alternative price.'),
+  );
+  return $form;
+}
+
+/**
+* Submit handler for product node edit form
+*/
+function uc_alternative_product_node_form_submit($form, &$form_state) {
+  //alter next line when converting 5 to 6  
+  //$nid = (!empty($form_state['values']['nid'])) ? $form_state['values']['nid'] : db_result(db_query("SELECT `id` FROM {sequences} WHERE `name` = 'node_nid'"));
+  //$nid = $form_state['value']['nid'];
+  //most of the code went to hook_nodeapi $op === insert because sequence table is now gone with 6 and 
+  //nid is not avaiable when creating a new node, and its needs to be created first
+}
+
+/*******************************************************************************
+* Module and Helper Functions
+*******************************************************************************/
+
+/**
+* Given a product node, return its alternative price product feature with the
+* calculated discount (if applicable)
+* @param $nid
+*   The product node id.
+* @return:
+* The alternative feature or FALSE if the product node doesn't have an
+* alternative price feature.
+*/
+function _uc_alternative_price_get_alternative_price($nid) {
+  $alternative_price = db_fetch_object(db_query("SELECT * FROM {uc_product_features} as f LEFT JOIN {uc_alternative_prices} as a ON f.pfid = a.pfid WHERE f.nid = %d AND f.fid = '%s'", $nid, UC_ALTERNATIVE_PRICE_FID));
+  
+  $alternative_price->alternative_description = (!empty($alternative_price->alternative_description)) ? $alternative_price->alternative_description : t("Alternative Price");
+  $alternative_price->alternative_button = t('Add !alternative_description to cart', array('!alternative_description' => $alternative_price->alternative_description));
+  $alternative_price->standard_button = t('Add !standard_description to cart', array('!standard_description' => $alternative_price->standard_description));
+  if (!empty($alternative_price->alternative_price)) {
+    $past_sales = (!empty($alternative_price->discount)) ? db_result(db_query("SELECT SUM(qty) FROM {uc_order_products} as p LEFT JOIN {uc_orders} as o ON p.order_id = o.order_id WHERE o.order_status = '%s' AND p.nid = %d", variable_get('uc_alternative_price_completed_status', 'completed'), $nid)) : 0;
+    $alternative_price->price = ($past_sales == 0) ? $alternative_price->alternative_price : ((($alternative_price->price_high-(($past_sales-1)*$alternative_price->discount)) < $alternative_price->price_low) ? $alternative_price->price_low : ($alternative_price->price_high-(($past_sales-1)*$alternative_price->discount)));
+    return $alternative_price;
+  }
+  return FALSE;
+}
+
+/**
+ * Implementation of hook_views_api().
+ */
+function uc_alternative_price_views_api() {
+  return array(
+    'api' => '2.0',
+    'path' => drupal_get_path('module', 'uc_alternative_price') .'/views',
+  );
+}

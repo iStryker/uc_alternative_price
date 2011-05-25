@@ -1,0 +1,9 @@
+; $Id: uc_alternative_price.info,v 1.1 2009/03/03 13:01:25 greggles Exp $
+name = Alternative Price
+description = Allows an alternative price product feature for product nodes.
+dependencies[] = uc_product
+package = "Ubercart - extra"
+version = "6.x-1.x-dev"
+project = "uc_alternative_price"
+datestamp = "1239669601"
+core = 6.x

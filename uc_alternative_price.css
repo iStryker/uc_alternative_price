@@ -1,0 +1,14 @@
+/* $Id: uc_alternative_price.css,v 1.1 2009/03/03 13:01:25 greggles Exp $ */
+
+#uc-alternative-price-discount {
+	margin:0px;
+	width:auto;
+}
+
+#uc-alternative-price-discount th {
+	display:none;
+} 
+
+#uc-alternative-price-discount td {
+	padding:0px;
+} 
